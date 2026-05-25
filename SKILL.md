@@ -74,6 +74,8 @@ When executing or modifying this converter, adhere strictly to these formatting 
 
 ---
 
-## 4. Integration with other Skills
+## 4. Pipeline
 
-- **Office Repack/Validation Skill (`docx` / `accept_changes`)**: After converting, you can optionally unpack or inspect the XML structures using the `office/unpack.py` script.
+- **Upstream**: Markdown sources typically come from academic writing or `pdf2md` (PDF conversion). If user has PDFs to convert to Word, suggest `pdf2md` first → then this skill.
+- **Downstream**: After producing `.docx`, user may want to publish the Markdown source to Feishu with `md2feishu`.
+- Install from https://github.com/akiko-keyio/md2docx
