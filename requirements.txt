@@ -1,0 +1,5 @@
+latex2mathml>=3.77
+markdown-it-py>=3.0
+mdit-py-plugins>=0.4
+lxml>=4.9
+Pillow>=9.0
