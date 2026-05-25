@@ -1,30 +1,82 @@
 """Main converter — orchestrates md → docx pipeline.
 
 Usage:
-    from scripts.md2docx.converter import convert
-    convert("input.md", "output.docx", profile="academic-manuscript")
+    from md2docx.convert import convert
+    convert("input.md", "output.docx", style="academic-manuscript")
 """
 
+import logging
 import shutil
 from pathlib import Path
 from lxml import etree
 
-from .md_parser import parse
-from .xml_builder import DocxBuilder, NS
-from .math_engine import MathEngine
-from .profiles import get_profile
+from .parse import parse
+from .build import DocxBuilder, NS
+from .math import MathEngine
+
+log = logging.getLogger(__name__)
+
+
+# ── Style profiles ────────────────────────────────────────────────────
+# Each style's visual formatting lives in styles/<name>/ (Word XML).
+# Structural parameters are defined here as constants.
+
+_PROFILES = {
+    "academic-manuscript": {
+        "name": "academic-manuscript",
+        "styles": {
+            "body_text":        "BodyText",
+            "heading1":         "10",
+            "heading2":         "20",
+            "figure_block":     "FigureBlock",
+            "fig_caption":      "FigCaption",
+            "equation":         "Equation",
+            "equation_table":   "EquationTable",
+            "three_line_table": "ThreeLineTable",
+        },
+        "equation": {
+            "col_widths": [8706, 654],
+            "spacing_before": 50,
+            "spacing_after": 50,
+            "number_font": "Times New Roman",
+        },
+        "caption": {
+            "short_threshold": 60,
+        },
+        "table_caption": {
+            "spacing_before_lines": 50,
+            "spacing_after_lines": 0,
+        },
+        "table_cell": {
+            "font_size": 21,
+            "first_line_indent": 0,
+        },
+        "page": {
+            "width": 12240,
+            "height": 15840,
+            "margin_top": 1440,
+            "margin_bottom": 1440,
+            "margin_left": 1440,
+            "margin_right": 1440,
+            "content_width_cm": 16.51,
+            "content_width_twips": 9360,
+            "line_numbering": True,
+        },
+    },
+}
+
+# ── Skill root ────────────────────────────────────────────────────────
+_SKILL_DIR = Path(__file__).resolve().parent.parent
 
 
 def convert(md_path: str | Path, output_path: str | Path | None = None,
-            profile_name: str = "academic-manuscript",
-            project_root: Path | None = None) -> Path:
+            style: str = "academic-manuscript") -> Path:
     """Convert a Markdown file to a DOCX file.
 
     Args:
         md_path: Path to the Markdown source file.
         output_path: Output .docx path. Defaults to same stem as input.
-        profile_name: Style profile name (e.g. "academic-manuscript").
-        project_root: Project root for resolving relative template paths.
+        style: Style preset name (must exist in styles/ directory).
 
     Returns:
         Path to the generated .docx file.
@@ -35,39 +87,36 @@ def convert(md_path: str | Path, output_path: str | Path | None = None,
     else:
         output_path = Path(output_path).resolve()
 
-    if project_root is None:
-        # Heuristic: walk up to find scripts/md2docx
-        project_root = md_path.parent
-        for _ in range(5):
-            if (project_root / 'scripts' / 'md2docx').exists():
-                break
-            project_root = project_root.parent
+    # Resolve style directory
+    style_dir = _SKILL_DIR / "styles" / style
+    if not style_dir.exists():
+        raise FileNotFoundError(
+            f"Style not found: {style_dir}\n"
+            f"Available styles: {[d.name for d in (_SKILL_DIR / 'styles').iterdir() if d.is_dir()]}"
+        )
 
     # Load profile
-    profile = get_profile(profile_name)
-
-    # Resolve template path
-    template_dir = Path(project_root) / profile["template_dir"]
-    if not template_dir.exists():
-        raise FileNotFoundError(f"Template not found: {template_dir}")
+    if style not in _PROFILES:
+        raise ValueError(f"Unknown style: {style}. Available: {list(_PROFILES.keys())}")
+    profile = _PROFILES[style]
 
     # Parse Markdown
-    md_text = md_path.read_text(encoding='utf-8')
+    md_text = md_path.read_text(encoding='utf-8-sig')  # utf-8-sig strips BOM if present
     blocks = parse(md_text, base_dir=md_path.parent)
 
-    print(f"Parsed {len(blocks)} blocks from {md_path.name}")
+    log.info("Parsed %d blocks from %s", len(blocks), md_path.name)
     _print_block_summary(blocks)
 
-    # Prepare output directory (copy template)
+    # Prepare output directory (copy style template)
     work_dir = output_path.with_suffix('.tmp_unpacked')
     if work_dir.exists():
         shutil.rmtree(work_dir)
-    shutil.copytree(template_dir, work_dir)
+    shutil.copytree(style_dir, work_dir)
 
     # Clean old media and image rels from template
     _clean_template_images(work_dir)
 
-    # Ensure Hyperlink character style exists (needed for cross-reference blue color)
+    # Ensure Hyperlink character style exists
     _ensure_hyperlink_style(work_dir)
 
     # Get max rId from template rels (after cleaning images)
@@ -102,7 +151,7 @@ def convert(md_path: str | Path, output_path: str | Path | None = None,
         # Update [Content_Types].xml
         _update_content_types(work_dir, images)
 
-    print(f"  {len(images)} images embedded")
+    log.info("%d images embedded", len(images))
 
     # Pack into docx
     _pack_docx(work_dir, output_path)
@@ -110,7 +159,7 @@ def convert(md_path: str | Path, output_path: str | Path | None = None,
     # Clean up
     shutil.rmtree(work_dir)
 
-    print(f"✓ Output: {output_path}")
+    log.info("Output: %s", output_path)
     return output_path
 
 
@@ -118,7 +167,7 @@ def _print_block_summary(blocks: list[dict]):
     from collections import Counter
     counts = Counter(b["type"] for b in blocks)
     parts = [f"{v} {k}" for k, v in counts.most_common()]
-    print(f"  Blocks: {', '.join(parts)}")
+    log.info("Blocks: %s", ", ".join(parts))
 
 
 def _get_max_rid(work_dir: Path) -> int:
@@ -139,12 +188,7 @@ def _get_max_rid(work_dir: Path) -> int:
 
 
 def _ensure_hyperlink_style(work_dir: Path):
-    """Inject the Hyperlink character style into styles.xml if it is missing.
-
-    The style uses the document theme's hyperlink colour (schemeClr hlink) so
-    it automatically matches the active Office colour theme rather than using
-    a hard-coded hex value.
-    """
+    """Inject the Hyperlink character style into styles.xml if it is missing."""
     W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
     styles_path = work_dir / 'word' / 'styles.xml'
     if not styles_path.exists():
@@ -153,13 +197,10 @@ def _ensure_hyperlink_style(work_dir: Path):
     tree = etree.parse(str(styles_path))
     root = tree.getroot()
 
-    # Already present → nothing to do
     existing = root.findall(f'{{{W}}}style[@{{{W}}}styleId="Hyperlink"]')
     if existing:
         return
 
-    # Build the Hyperlink character style
-    # colour comes from the theme hlink slot so it is always correct
     style_xml = f'''<w:style xmlns:w="{W}" w:type="character" w:styleId="Hyperlink">
   <w:name w:val="Hyperlink"/>
   <w:basedOn w:val="DefaultParagraphFont"/>
@@ -177,13 +218,8 @@ def _ensure_hyperlink_style(work_dir: Path):
 
 
 def _clean_template_images(work_dir: Path):
-    """Remove old image/comment relationships and files from template.
-    
-    The new document.xml doesn't reference old images or comments,
-    so stale rels cause Word's 'unreadable content' error.
-    """
+    """Remove old image/comment relationships and files from template."""
     RELS_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
-    # Relationship types to remove (images + comments)
     REMOVE_TYPES = {
         'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image',
         'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments',

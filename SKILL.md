@@ -1,81 +1,74 @@
 ---
 name: md2docx
-description: "Convert Academic Markdown to polished Word .docx using pure Python, with native OMML equations, auto-sizing aspect-locked images, centered/justified captions, 3-line tables with vertically-centered cells, smart dashes, and bold blue cross-reference fields."
+description: "Convert Markdown to Word .docx with configurable style profiles (e.g., academic manuscript)."
 ---
 
-# md2docx (Markdown to Academic Word Converter)
+# md2docx
 
-This skill converts a Markdown document to a highly polished, publisher-ready academic Word document (`.docx`) without requiring external heavy tools like Pandoc.
+Pure-Python Markdown → Word converter.
 
-## 1. System & Python Dependencies
+## 1. Requirements
 
-This converter runs on pure Python but relies on Microsoft Office's native XSLT stylesheet (`MML2OMML.XSL`) to translate MathML into Microsoft Office's native math format (OMML).
+- **Microsoft Office** — provides `MML2OMML.XSL` for equation rendering
+- **Python packages**: `pip install -r "<SKILL_DIR>/requirements.txt"`
 
-### 1.1 Requirements
-- **Microsoft Office** (specifically `MML2OMML.XSL` located in Program Files)
-- Python packages (install using `requirements.txt` in this skill folder):
-  ```bash
-  pip install -r "<SKILL_DIR>/requirements.txt"
-  ```
-
-## 2. Command Usage
+## 2. Usage
 
 ```bash
-python -m scripts.md2docx <input.md> -o <output.docx> [-p academic-manuscript]
+python -m md2docx <input.md> -o <output.docx> [--style academic-manuscript]
 ```
-- `<input.md>`: Path to the manuscript.
-- `-o <output.docx>`: Destination Word document.
-- `-p`: Style profile (default: `academic-manuscript`).
 
----
+Run from `<SKILL_DIR>`. The skill is self-contained.
 
-## 3. Formatting & Conversion Rules (The "Secret Sauce")
+## 3. Architecture
 
-When executing or modifying this converter, adhere strictly to these formatting invariants:
+```
+<SKILL_DIR>/
+├── md2docx/              ← Python package
+│   ├── cli.py            ← argument parsing
+│   ├── convert.py        ← orchestrator: parse → build → package
+│   ├── parse.py          ← Markdown → block list
+│   ├── build.py          ← block list → document.xml
+│   └── math.py           ← LaTeX → OMML
+└── styles/               ← style presets (each = unpacked .docx)
+    └── academic-manuscript/
+        └── word/
+            ├── styles.xml      ← visual formatting
+            ├── settings.xml    ← document settings
+            └── theme/          ← color/font theme
+```
 
-### 3.1 Mathematical Formula Rendering
-- **Conversion Chain**: LaTeX → MathML (via `latex2mathml`) → OMML (via `MML2OMML.XSL`) → Post-Processed OMML.
-- **Font & Operators**: No explicit fonts are written into math runs (letting Word use default Cambria Math). Known abbreviations/operators (e.g., `ZTD`, `RMS`, `RMSE`, `STD`, `sin`, `cos`, `exp`) are automatically post-processed to be upright (`sty val="p"`), preventing them from rendering in italic.
+**Flow**: `convert.py` copies `styles/<name>/` as output skeleton → `parse.py` reads Markdown → `build.py` generates `document.xml` → zip as `.docx`.
 
-### 3.2 Dynamic Cross-References
-- **In-text citations** matching `Eq. (N)`, `Fig. N`, and `Table N` are dynamically split and wrapped into MS Word **REF fields** pointing to bookmarks (`_EqN`, `_FigN`, `_TabN`).
-- **Visual Styles**:
-  - The text prefix (e.g., `Fig. ` or `Table `) is styled **bold**.
-  - The reference number itself is styled **bold + pure blue (`0000FF`)**, and **not underlined** (re-written directly inside the REF field runs).
-- **Captions Bookmark Wrapper**: Paragraph bookmarks wrapping the whole caption are generated as reference targets. Cross-reference fields inside captions are **explicitly disabled** (so captions don't reference themselves and turn blue).
+## 4. Input Contract
 
-### 3.3 Image Handling & Column-Width Hints
-- **Explicit Sizing**: Controlled directly via alt-text in Markdown:
-  - `![half](...)` scales the image to **single-column width (60% of content width)**.
-  - `![full](...)` scales the image to **full-width (16.51 cm / 6.5 inches)**.
-- **Implicit Sizing**: If alt-text is not "half" or "full", images with pixel widths ≤ 1500px are treated as `half`, others as `full`.
-- **Aspect Ratio Locking**: Explicitly sets `<a:picLocks noChangeAspect="1"/>` with correct XML namespaces so users cannot distort images.
+Write Markdown following these patterns to trigger correct conversion:
 
-### 3.4 Table Styles & Padding
-- **Three-line Table**: Drawn with top/bottom borders (1.5pt) and a header bottom border (0.75pt). Left, right, and vertical borders are removed.
-- **Vertical Centering**: Every table cell is vertically centered using `<w:vAlign w:val="center"/>`.
-- **Padding & Line Spacing**: Paragraphs inside table cells have no indent, are horizontally centered, and are padded with **0.25-line before and after** spacing (`beforeLines="25"`, `afterLines="25"`, `line="240"`, `lineRule="auto"`).
+| Pattern | Behavior |
+|---------|----------|
+| `$$...\tag{N}$$` | Numbered equation in 2-column table |
+| `![half](path)` or image ≤1500px | 60% width |
+| `![full](path)` or image >1500px | Full text width |
+| `**Fig. N** caption` | Figure caption with bookmark |
+| `**Table N.** caption` | Table caption with bookmark |
+| `Eq. (N)`, `Fig. N`, `Table N` in text | Cross-reference REF field |
+| GFM pipe table | Three-line table |
+| `--` / `---` | En-dash / em-dash |
 
-### 3.5 Headings Spacing
-- **Level 1 & 2 Headings** (`<h1>`, `<h2>` / `#`, `##`) are configured with:
-  - **Spacing Before**: 1.0 line (`beforeLines="100"`)
-  - **Spacing After**: 0 pt (`after="0"`)
-  - **Line Spacing**: 240 (single spacing)
+## 5. Styles
 
-### 3.6 Caption Alignment
-- Caption paragraphs (both tables and figures) are centered or justified based on length:
-  - **Single-line Captions** (total length ≤ 80 characters) → **Centered** (`jc="center"`).
-  - **Multi-line Captions** (total length > 80 characters) → **Justified** (`jc="both"`).
+Each style = a directory under `styles/` containing Word Open XML (the internal structure of a .docx file). The `word/` subdirectory is mandated by the Open XML specification.
 
-### 3.7 Typographical Dash Conversions
-- Typographer is turned on. Standard hyphens are converted as follows during conversion:
-  - `--` → `–` (en dash, e.g., range values: `2020–2021`, `ERA5–GNSS`)
-  - `---` → `—` (em dash, e.g., insertion phrases)
+- **Visual formatting** (fonts, colors, spacing) → edit `word/styles.xml`
+- **Page layout** (dimensions, margins) → written into `sectPr` by `build.py`
 
----
+To create a new style: copy `styles/academic-manuscript/` → rename → edit `word/styles.xml`.
 
-## 4. Pipeline
+## 6. Troubleshooting
 
-- **Upstream**: Markdown sources typically come from academic writing or `pdf2md` (PDF conversion). If user has PDFs to convert to Word, suggest `pdf2md` first → then this skill.
-- **Downstream**: After producing `.docx`, user may want to publish the Markdown source to Feishu with `md2feishu`.
-- Install from https://github.com/akiko-keyio/md2docx
+| Symptom | Fix |
+|---------|-----|
+| `PermissionError` on output | Close the file in Word |
+| Equation shows literal `\arg` | Use `\operatorname{arg}` |
+| Image too small | Check pixel width (≤1500px → half) |
+| DOCX opens with repair prompt | Stale comment XML (auto-cleaned) |

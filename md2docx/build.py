@@ -8,7 +8,7 @@ from pathlib import Path
 from lxml import etree
 from PIL import Image
 
-from .math_engine import MathEngine
+from .math import MathEngine
 
 # ── Namespaces ────────────────────────────────────────────────────────
 NS = {
@@ -371,26 +371,64 @@ class DocxBuilder:
         # Build the caption paragraph — no cross-reference REF fields inside captions
         p = self._make_p(body, "fig_caption", runs, jc=jc, extra_pPr=extra_pPr, refs_enabled=False)
 
-        # Add bookmark wrapping the whole paragraph for cross-reference
+        # Add bookmark wrapping ONLY the number digit in the caption.
+        # e.g. for "Fig. 3 caption…", bookmark wraps just "3" so that
+        # REF _Fig3 \h resolves to "3", not "Fig. 3 caption…".
         cap_text = ''.join(r.get('text', '') for r in block['runs'] if r.get('type') == 'text')
         m = re.match(r'(Fig|Table)\.?\s*(\d+)', cap_text)
         if m:
+            import copy
             kind, num = m.group(1), m.group(2)
             bm_name = f'_Fig{num}' if kind == 'Fig' else f'_Tab{num}'
             bm_id   = str(self._bookmark_id)
             self._bookmark_id += 1
-            bm_id2  = str(self._bookmark_id)
-            self._bookmark_id += 1
-            # Insert bookmarkStart before first run, bookmarkEnd at end
+
             bs = etree.Element(_qn('w:bookmarkStart'))
             bs.set(_qn('w:id'), bm_id)
             bs.set(_qn('w:name'), bm_name)
             be = etree.Element(_qn('w:bookmarkEnd'))
             be.set(_qn('w:id'), bm_id)
-            # Insert after pPr
-            pPr_idx = list(p).index(p.find(_qn('w:pPr')))
-            p.insert(pPr_idx + 1, bs)
-            p.append(be)
+
+            # Find the first run whose text contains the label (e.g. "Fig. 3")
+            # and split it into [prefix_run][bookmarkStart][number_run][bookmarkEnd]
+            inserted = False
+            for i, child in enumerate(list(p)):
+                if child.tag != _qn('w:r'):
+                    continue
+                t_el = child.find(_qn('w:t'))
+                if t_el is None or not t_el.text:
+                    continue
+                nm = re.match(r'^((?:Fig|Table)\.?\s*)(\d+)(.*)', t_el.text)
+                if nm:
+                    prefix_txt = nm.group(1)   # "Fig. "
+                    number_txt = nm.group(2)   # "3"
+                    suffix_txt = nm.group(3)   # ""
+
+                    # Shorten existing run to just the prefix
+                    t_el.text = prefix_txt
+                    if prefix_txt.endswith(' ') or prefix_txt.startswith(' '):
+                        t_el.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+
+                    # Build separate number run (same rPr)
+                    r_num = etree.Element(_qn('w:r'))
+                    rPr_orig = child.find(_qn('w:rPr'))
+                    if rPr_orig is not None:
+                        r_num.append(copy.deepcopy(rPr_orig))
+                    t_num = etree.SubElement(r_num, _qn('w:t'))
+                    t_num.text = number_txt + suffix_txt
+
+                    # Insert after existing prefix run: [bs][r_num][be]
+                    p.insert(i + 1, bs)
+                    p.insert(i + 2, r_num)
+                    p.insert(i + 3, be)
+                    inserted = True
+                    break
+
+            if not inserted:
+                # Fallback: wrap whole paragraph
+                pPr_idx = list(p).index(p.find(_qn('w:pPr')))
+                p.insert(pPr_idx + 1, bs)
+                p.append(be)
 
     # ── Equation table ────────────────────────────────────────────────
 

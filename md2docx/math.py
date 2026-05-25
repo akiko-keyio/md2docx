@@ -46,8 +46,18 @@ class MathEngine:
         'subject', 'to',
     }
 
+    def _preprocess(self, latex: str) -> str:
+        """Normalize LaTeX before conversion to avoid round-trip drift.
+
+        `\ ` (backslash-space): latex2mathml encodes trailing backslash-space as a
+        visible backslash in OMML; pandoc reads it back as \\backslash.
+        Replace with a plain space.  Guard (?<!\\) so we preserve \\ (array row breaks).
+        """
+        return re.sub(r'(?<!\\)\\ ', ' ', latex)
+
     def to_omml(self, latex: str) -> etree._Element:
         """Convert a LaTeX string to an OMML <m:oMath> element."""
+        latex = self._preprocess(latex)
         mathml_str = latex2mathml.converter.convert(latex)
         mml_tree = etree.fromstring(mathml_str.encode())
         omml_tree = self._transform(mml_tree)
